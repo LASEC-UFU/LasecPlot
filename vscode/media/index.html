@@ -91,15 +91,16 @@
                                 <div v-if="input.type=='serial' " class="connection-serial-input">
                                     <div class="connection-serial-input-params">
                                         <!--Port-->
-                                        <select v-if="!input.connected" v-model="input.port" style="min-width: 6em;">
-                                            <option v-for="port in input.portList" v-bind:key="port.path"
-                                                v-bind:value="port.path">
-                                                {{port.path}}
+                                        <select v-if="!input.connected" v-model="input.sourceKey"
+                                            @change="input.onSourceChanged()" style="min-width: 10em;">
+                                            <option v-for="port in input.portList" v-bind:key="port.key"
+                                                v-bind:value="port.key">
+                                                {{port.displayName}}
                                             </option>
                                         </select>
-                                        <span v-if="input.connected">{{input.port}}</span>
+                                        <span v-if="input.connected">{{input.selectedDisplayName || input.port}}</span>
                                         <!--Baud-->
-                                        <select v-if="!input.connected" v-model="input.baudrate">
+                                        <select v-if="!input.connected && input.sourceType!='lasecsimul'" v-model="input.baudrate">
                                             <option value="300">300</option>
                                             <option value="1200">1200</option>
                                             <option value="2400">2400</option>
@@ -115,6 +116,7 @@
                                             <option value="576000">576000</option>
                                             <option value="921600">921600</option>
                                         </select>
+                                        <span v-if="!input.connected && input.sourceType=='lasecsimul'">@{{input.baudrate}}</span>
                                         <span v-if="input.connected">@{{input.baudrate}}</span>
                                     </div>
                                     <div class="connection-serial-buttons">
@@ -122,6 +124,12 @@
                                         <button v-if="!input.connected" @click="input.connect()">Open</button>
                                         <button v-if="input.connected" @click="input.disconnect()"
                                             style="margin-left: 5px">Close</button>
+                                    </div>
+                                    <div v-if="input.statusMessage" class="connection-source-message"
+                                        v-bind:title="input.statusMessage">{{input.statusMessage}}</div>
+                                    <div v-if="!input.connected && input.lasecSimulStatus.message"
+                                        class="connection-source-hint">
+                                        {{input.lasecSimulStatus.message}}
                                     </div>
                                 </div>
 

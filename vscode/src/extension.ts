@@ -8,6 +8,9 @@ import * as dgram from 'dgram';
 
 import { SerialPort } from 'serialport';
 import { ReadlineParser } from '@serialport/parser-readline';
+import { DeviceStreamParser } from './deviceStreamParser';
+import { LasecSimulSourceProvider, type LasecSimulSourceState } from './lasecsimulSourceProvider';
+import type { LasecPlotEndpointDescriptor } from './lasecsimulInterop';
 // IP resolvido quando o endereço é .local (via mDNS 5353 ou fallback 3232)
 let currentResolvedRemoteAddress: string | null = null;
 
@@ -224,6 +227,8 @@ let udpServer: dgram.Socket | null = null;
 let currentPanel: vscode.WebviewPanel | null = null;
 const _disposables: vscode.Disposable[] = [];
 let statusBarIcon: vscode.StatusBarItem;
+let lasecSimulSources: LasecSimulSourceProvider | undefined;
+const serialInputIds = new Set<string>();
 
 // ================== FUNÇÕES DE CONFIG ==================
 function getConfig() {
@@ -332,6 +337,15 @@ async function saveAddressPort(address: string, port: number) {
 
 // ================== ATIVAÇÃO ==================
 export function activate(context: vscode.ExtensionContext) {
+  lasecSimulSources = new LasecSimulSourceProvider(
+    id => vscode.extensions.getExtension(id) as any,
+    () => void broadcastSourceLists(),
+  );
+  context.subscriptions.push(lasecSimulSources);
+  void lasecSimulSources.initialize().catch(error => {
+    console.error('[LasecSimul] falha ao inicializar integração:', error);
+  });
+
   statusBarIcon = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
   statusBarIcon.command = 'lasecplot.start';
   context.subscriptions.push(statusBarIcon);
@@ -408,6 +422,8 @@ export function activate(context: vscode.ExtensionContext) {
           (serials as any)[s] = null;
         }
         serials = {};
+        for (const id of serialInputIds) void lasecSimulSources?.disconnect(id);
+        serialInputIds.clear();
         currentPanel = null;
       }, null, _disposables);
 
@@ -509,7 +525,7 @@ export function activate(context: vscode.ExtensionContext) {
 
         // comandos gerais
         if ('cmd' in message) {
-          runCmd(message);
+          void runCmd(message);
           return;
         }
       }, null, _disposables);
@@ -522,25 +538,72 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 // ================== COMANDOS / SERIAL ==================
-function runCmd(msg: any) {
+async function runCmd(msg: any) {
   const id: string = ('id' in msg) ? msg.id : '';
 
   if (msg.cmd === 'listSerialPorts') {
-    listSerialPortsMerged().then((ports) => {
-      currentPanel?.webview.postMessage({ id, cmd: 'serialPortList', list: ports });
-    }).catch(async (err) => {
-      console.warn('[serial] merged list failed, fallback SerialPort.list():', err);
-      try {
-        const base = await SerialPort.list();
-        currentPanel?.webview.postMessage({ id, cmd: 'serialPortList', list: base });
-      } catch (e) {
-        console.error('[serial] total list failure:', e);
-        currentPanel?.webview.postMessage({ id, cmd: 'serialPortList', list: [] });
+    serialInputIds.add(id);
+    await postSourceList(id);
+    return;
+  }
+  else if (msg.cmd === 'connectDataSource' && msg.sourceType === 'lasecsimul') {
+    const endpointId = String(msg.endpointId || '');
+    try {
+      if (serials[id]) {
+        try { serials[id].close(); } catch { /* ignore */ }
+        delete serials[id];
       }
-    });
+      const parser = new DeviceStreamParser(parsed => {
+        currentPanel?.webview.postMessage({
+          id,
+          data: parsed.data,
+          isRaw: parsed.isRaw,
+          fromSerial: true,
+          fromLasecSimul: true,
+          timestamp: parsed.timestamp,
+        });
+      });
+      const endpoint = await lasecSimulSources?.connect(
+        id,
+        endpointId,
+        packet => parser.push(packet.data, packet.simulationTimeNs / 1_000_000),
+        reason => {
+          parser.reset();
+          currentPanel?.webview.postMessage({
+            id,
+            cmd: 'serialPortDisconnect',
+            reason,
+            message: friendlyCloseReason(reason),
+          });
+        },
+      );
+      if (!endpoint) throw new Error('LasecSimul não está disponível.');
+      currentPanel?.webview.postMessage({
+        id,
+        cmd: 'serialPortConnect',
+        sourceType: 'lasecsimul',
+        endpointId: endpoint.id,
+        displayName: endpoint.displayName,
+        baud: endpoint.baudRate,
+      });
+    } catch (error) {
+      currentPanel?.webview.postMessage({
+        id,
+        cmd: 'serialPortError',
+        message: `Falha ao abrir fonte LasecSimul: ${getErrorMessage(error)}`,
+      });
+    }
+    return;
+  }
+  else if (msg.cmd === 'disconnectDataSource') {
+    await lasecSimulSources?.disconnect(id);
+    try { serials[id]?.close(); } catch { /* ignore */ }
+    delete serials[id];
+    currentPanel?.webview.postMessage({ id, cmd: 'serialPortDisconnect', reason: 'client-closed' });
     return;
   }
   else if (msg.cmd === 'connectSerialPort') {
+    await lasecSimulSources?.disconnect(id);
     if (serials[id]) {
       try { serials[id].close(); } catch { /* ignore */ }
       delete serials[id];
@@ -566,72 +629,40 @@ function runCmd(msg: any) {
       currentPanel?.webview.postMessage({ id, cmd: 'serialPortDisconnect' });
     });
 
-// ======== Parser manual: RAW (<...|g\r\n) + texto (\n) ========
-    let serialBuffer = Buffer.alloc(0);
-    const rawEnd = Buffer.from('|g\r\n');
+    const parser = new DeviceStreamParser(parsed => {
+      currentPanel?.webview.postMessage({
+        id,
+        data: parsed.data,
+        isRaw: parsed.isRaw,
+        fromSerial: true,
+        timestamp: parsed.timestamp,
+      });
+    });
 
     sp.on('data', (chunk: Buffer) => {
-      if (!Buffer.isBuffer(chunk)) {
-        chunk = Buffer.from(chunk);
-      }
-
-      // Acumula tudo num buffer de stream
-      serialBuffer = Buffer.concat([serialBuffer, chunk]);
-
-      // Processa enquanto tiver coisa suficiente
-      while (serialBuffer.length > 0) {
-        // 1) Se começa com '<' → frame RAW do plotRaw
-        if (serialBuffer[0] === 0x3C) { // '<'
-          const endIdx = serialBuffer.indexOf(rawEnd);
-          if (endIdx === -1) {
-            // Ainda não chegou o frame completo |g\r\n
-            break;
-          }
-
-          const frame = serialBuffer.slice(0, endIdx + rawEnd.length);
-          serialBuffer = serialBuffer.slice(endIdx + rawEnd.length);
-
-          currentPanel?.webview.postMessage({
-            id,
-            data: frame,      // Buffer cru
-            isRaw: true,
-            fromSerial: true,
-            timestamp: Date.now()
-          });
-        }
-        // 2) Caso contrário → trata como linha de texto terminada em '\n'
-        else {
-          const nlIdx = serialBuffer.indexOf(0x0A); // '\n'
-          if (nlIdx === -1) {
-            // Não temos uma linha completa ainda
-            break;
-          }
-
-          const lineBuf = serialBuffer.slice(0, nlIdx); // sem o '\n'
-          serialBuffer = serialBuffer.slice(nlIdx + 1);
-
-          let line = lineBuf.toString();
-          // Remove '\r' final se existir (Windows-style \r\n)
-          if (line.endsWith('\r')) {
-            line = line.slice(0, -1);
-          }
-
-          currentPanel?.webview.postMessage({
-            id,
-            data: line,
-            fromSerial: true,
-            timestamp: Date.now()
-          });
-        }
-      }
+      parser.push(chunk, Date.now());
     });
     return;
   }
   else if (msg.cmd === 'sendToSerial') {
-    serials[id]?.write(String(msg.text ?? ''));
+    const text = String(msg.text ?? '');
+    if (lasecSimulSources?.hasConnection(id)) {
+      try {
+        await lasecSimulSources.write(id, Buffer.from(text, 'utf8'));
+      } catch (error) {
+        currentPanel?.webview.postMessage({
+          id,
+          cmd: 'sourceWriteError',
+          message: `Falha ao escrever no LasecSimul: ${getErrorMessage(error)}`,
+        });
+      }
+    } else {
+      serials[id]?.write(text);
+    }
     return;
   }
   else if (msg.cmd === 'disconnectSerialPort') {
+    await lasecSimulSources?.disconnect(id);
     try { serials[id]?.close(); } catch { /* ignore */ }
     delete serials[id];
     return;
@@ -644,6 +675,74 @@ function runCmd(msg: any) {
     }
     return;
   }
+}
+
+async function postSourceList(id: string): Promise<void> {
+  let ports: PortInfoLite[] = [];
+  try {
+    ports = await listSerialPortsMerged();
+  } catch (error) {
+    console.warn('[serial] merged list failed, fallback SerialPort.list():', error);
+    try {
+      ports = await SerialPort.list();
+    } catch (fallbackError) {
+      console.error('[serial] total list failure:', fallbackError);
+    }
+  }
+
+  const state = lasecSimulSources?.state ?? {
+    availability: 'not-installed',
+    endpoints: [],
+    message: 'LasecSimul não instalado',
+  } as LasecSimulSourceState;
+  currentPanel?.webview.postMessage({
+    id,
+    cmd: 'serialPortList',
+    list: [
+      ...ports.map(port => ({
+        key: `serial:${port.path}`,
+        sourceType: 'serial',
+        path: port.path,
+        displayName: port.path,
+      })),
+      ...state.endpoints.map(endpointToSourceOption),
+    ],
+    lasecSimul: {
+      availability: state.availability,
+      message: state.message ?? (state.endpoints.length ? undefined : 'Nenhuma fonte aberta'),
+    },
+  });
+}
+
+async function broadcastSourceLists(): Promise<void> {
+  await Promise.all([...serialInputIds].map(id => postSourceList(id)));
+}
+
+function endpointToSourceOption(endpoint: LasecPlotEndpointDescriptor) {
+  return {
+    key: `lasecsimul:${endpoint.id}`,
+    sourceType: 'lasecsimul',
+    endpointId: endpoint.id,
+    displayName: `LasecSimul: ${endpoint.displayName}`,
+    baudRate: endpoint.baudRate,
+  };
+}
+
+function friendlyCloseReason(reason: string): string {
+  const messages: Record<string, string> = {
+    'device-closed': 'O dispositivo foi fechado no LasecSimul.',
+    'simulation-stopped': 'A simulação foi encerrada.',
+    'device-removed': 'O dispositivo foi removido do schematic.',
+    'transport-error': 'Falha no transporte do LasecSimul.',
+    'extension-deactivated': 'A extensão LasecSimul foi desativada.',
+    'client-closed': 'Conexão encerrada pelo LasecPlot.',
+    disposed: 'Conexão descartada.',
+  };
+  return messages[reason] ?? `Conexão encerrada: ${reason}`;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 // ================== SAVE DIALOG ==================
@@ -816,4 +915,6 @@ export function deactivate() {
   for (const k in serials) {
     try { serials[k].close(); } catch { /* ignore */ }
   }
+  lasecSimulSources?.dispose();
+  lasecSimulSources = undefined;
 }

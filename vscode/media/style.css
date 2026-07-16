@@ -583,7 +583,21 @@ body {
 .connection-serial-input {
 	display: flex;
 	flex-direction: row;
+	flex-wrap: wrap;
 }
+
+.connection-source-message,
+.connection-source-hint {
+    flex-basis: 100%;
+    max-width: 250px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 10px;
+}
+
+.connection-source-message { color: #f0b429; }
+.connection-source-hint { opacity: 0.8; }
 
 .connection-serial-input-params {
 	display: flex;
