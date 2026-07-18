@@ -7,7 +7,6 @@ import { execFile } from 'child_process';
 import * as dgram from 'dgram';
 
 import { SerialPort } from 'serialport';
-import { ReadlineParser } from '@serialport/parser-readline';
 import { DeviceStreamParser } from './deviceStreamParser';
 import { LasecSimulSourceProvider, type LasecSimulSourceState } from './lasecsimulSourceProvider';
 import type { LasecPlotEndpointDescriptor } from './lasecsimulInterop';
@@ -585,6 +584,7 @@ async function runCmd(msg: any) {
         endpointId: endpoint.id,
         displayName: endpoint.displayName,
         baud: endpoint.baudRate,
+        writable: endpoint.writable,
       });
     } catch (error) {
       currentPanel?.webview.postMessage({
@@ -725,6 +725,7 @@ function endpointToSourceOption(endpoint: LasecPlotEndpointDescriptor) {
     endpointId: endpoint.id,
     displayName: `LasecSimul: ${endpoint.displayName}`,
     baudRate: endpoint.baudRate,
+    writable: endpoint.writable,
   };
 }
 

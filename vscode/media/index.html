@@ -395,9 +395,12 @@
                         <div v-if="(input.type=='serial' && input.port) || (input.type=='UDP' && input.connected)"
                             class="send-text-container">
 
-                            <input v-on:keyup.enter="input.sendText(input.textToSend,input.endlineToSend)"
+                            <input v-on:keyup.enter="(input.type!='serial' || input.writable) && input.sendText(input.textToSend,input.endlineToSend)"
+                                :disabled="input.type=='serial' && !input.writable"
                                 :placeholder="input.type=='serial'
-                                    ? ('Send to Serial ' + input.port + ' (' + input.connection.name + ')')
+                                    ? (input.writable
+                                        ? ('Send to Serial ' + input.port + ' (' + input.connection.name + ')')
+                                        : ('Read-only source ' + input.port))
                                     : ('Send to UDP ' + input.address + ':' + input.port + ' (' + input.connection.name + ')')" v-model="input.textToSend" style="width:100%" />
 
                             <select v-model="input.endlineToSend" style="max-width: 60px;">
@@ -407,7 +410,7 @@
                                 <option value="">empty</option>
                             </select>
 
-                            <button :disabled="!input.connected"
+                            <button :disabled="!input.connected || (input.type=='serial' && !input.writable)"
                                 @click="input.sendText(input.textToSend, input.endlineToSend)" style="max-width: 60px;">
                                 Send
                             </button>

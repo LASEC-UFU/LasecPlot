@@ -96,7 +96,9 @@ export class LasecSimulSourceProvider implements vscode.Disposable {
     if (!endpoint) throw new Error('A fonte selecionada não está mais disponível. Atualize a lista.');
 
     await this.disconnect(clientId);
-    const connection = await this.api.openLasecPlotEndpoint(endpoint.id, { writable: true });
+    const connection = await this.api.openLasecPlotEndpoint(endpoint.id, {
+      writable: endpoint.writable,
+    });
     if (this.disposed) {
       connection.dispose();
       throw new Error('LasecPlot foi desativado durante a conexão.');

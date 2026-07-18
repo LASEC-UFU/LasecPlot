@@ -1,7 +1,7 @@
 {
   "name": "lasecplot",
   "description": "Telemetry viewer.",
-  "version": "1.4.1",
+  "version": "1.5.2",
   "publisher": "josuemoraisgh",
   "private": true,
   "license": "MIT",
@@ -48,11 +48,13 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "test:unit": "npm run compile && node --test out/test/lasecsimulSourceProvider.test.js",
+    "test:package": "npm run compile && node --test out/test/packaging.test.js",
     "lint": "eslint . --ext .ts",
     "watch": "tsc -w -p ./",
-    "test": "npm run test:unit",
-    "package": "vsce package",
-    "publish": "vsce publish"
+    "test": "npm run test:unit && npm run test:package",
+    "prepackage": "node scripts/prune-foreign-prebuilds.js",
+    "package": "vsce package --target win32-x64",
+    "publish": "vsce publish --target win32-x64"
   },
   "dependencies": {
     "serialport": "^12.0.0"
@@ -68,15 +70,11 @@
     "@vscode/test-electron": "^2.4.0",
     "@vscode/vsce": "^3.1.0"
   },
-  "__metadata": {
-    "installedTimestamp": 1762004166236,
-    "targetPlatform": "undefined",
-    "size": 25843053
-  },
   "files": [
     "out",
     "media",
     "images",
+    "node_modules",
     "README.md",
     "LICENSE.txt",
     "package.json"

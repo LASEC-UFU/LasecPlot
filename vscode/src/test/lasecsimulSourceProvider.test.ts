@@ -40,12 +40,14 @@ class MockConnection implements LasecPlotConnection {
   readonly onPacket = this.packets.event;
   readonly onData = this.data.event;
   readonly onDidClose = this.closed.event;
-  readonly writable = true;
   closeCount = 0;
   disposeCount = 0;
   writes: Uint8Array[] = [];
 
-  constructor(readonly endpoint: LasecPlotEndpointDescriptor) {}
+  constructor(
+    readonly endpoint: LasecPlotEndpointDescriptor,
+    readonly writable: boolean,
+  ) {}
 
   async write(data: Uint8Array): Promise<void> {
     this.writes.push(new Uint8Array(data));
@@ -76,13 +78,13 @@ class MockApi implements LasecSimulInteropApi {
     this.openCalls.push({ id, options });
     const endpoint = this.endpoints.find(item => item.id === id);
     if (!endpoint) throw new Error('missing endpoint');
-    const connection = new MockConnection(endpoint);
+    const connection = new MockConnection(endpoint, options?.writable === true);
     this.connections.push(connection);
     return connection;
   }
 }
 
-function endpoint(id: string, displayName = 'Device'): LasecPlotEndpointDescriptor {
+function endpoint(id: string, displayName = 'Device', writable = true): LasecPlotEndpointDescriptor {
   return {
     id,
     name: 'duplicate-name',
@@ -94,7 +96,7 @@ function endpoint(id: string, displayName = 'Device'): LasecPlotEndpointDescript
     stopBits: 1,
     parity: 'none',
     readable: true,
-    writable: true,
+    writable,
     online: true,
     opened: true,
     connectedClients: 0,
@@ -194,6 +196,19 @@ test('conexão solicita escrita e encaminha bytes ao endpoint', async () => {
   assert.deepEqual(api.openCalls[0], { id: 'rw', options: { writable: true } });
   await provider.write('client', Uint8Array.from([0, 128, 255]));
   assert.deepEqual([...api.connections[0].writes[0]], [0, 128, 255]);
+});
+
+test('fonte read-only abre como leitora e continua recebendo como serial', async () => {
+  const api = new MockApi();
+  api.endpoints = [endpoint('rx-only', 'RX only', false)];
+  const received: number[][] = [];
+  const { provider } = providerFor(api);
+  await provider.initialize();
+  await provider.connect('client', 'rx-only', value => received.push([...value.data]), () => {});
+  assert.deepEqual(api.openCalls[0], { id: 'rx-only', options: { writable: false } });
+  api.connections[0].packets.fire(packet('rx-only', 0, [1, 2, 3]));
+  assert.deepEqual(received, [[1, 2, 3]]);
+  await assert.rejects(() => provider.write('client', Uint8Array.of(4)), /somente para leitura/);
 });
 
 test('parser incremental remonta uma linha dividida em dois lotes', () => {

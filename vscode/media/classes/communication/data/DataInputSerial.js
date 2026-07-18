@@ -4,6 +4,7 @@ class DataInputSerial extends DataInput{
         this.port = null;
         this.sourceKey = null;
         this.sourceType = "serial";
+        this.writable = true;
         this.selectedDisplayName = "";
         this.baudrate = 115200;
         this.type = "serial";
@@ -73,6 +74,7 @@ class DataInputSerial extends DataInput{
                 if (msg.displayName) this.selectedDisplayName = msg.displayName;
                 if (msg.sourceType) this.sourceType = msg.sourceType;
                 if (msg.baud) this.baudrate = msg.baud;
+                this.writable = msg.writable !== false;
             }
             else if(msg.cmd == "serialPortDisconnect"){
                 this.connected = false;
@@ -100,6 +102,7 @@ class DataInputSerial extends DataInput{
         const source = this.selectedSource();
         if (!source) return;
         this.sourceType = source.sourceType;
+        this.writable = source.sourceType === "serial" || source.writable === true;
         // Mantém a fonte virtual compatível com os controles que esperam uma "porta".
         this.port = source.path || source.displayName;
         this.selectedDisplayName = source.displayName;

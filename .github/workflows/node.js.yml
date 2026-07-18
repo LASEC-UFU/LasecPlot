@@ -45,7 +45,7 @@ jobs:
       - name: Dependências nativas
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ libudev-dev jq
+          sudo apt-get install -y --no-install-recommends build-essential python3 make g++ libudev-dev
 
       - name: Verificações mínimas
         shell: bash
@@ -86,7 +86,11 @@ jobs:
           echo "BASE_VERSION=$BASE"           >> "$GITHUB_ENV"
           echo "EXT_NAME=$NAME"               >> "$GITHUB_ENV"
           echo "PUBLISHER=$PUB"               >> "$GITHUB_ENV"
-          echo "VSIX_NAME=${PUB}.${NAME}-${BASE}.vsix" >> "$GITHUB_ENV"
+          # Sufixo "-win32-x64" alinhado com o nome real do pacote instalado hoje
+          # (josuemoraisgh.lasecplot-1.5.1-win32-x64) e com `vsce package --target win32-x64` abaixo --
+          # sem isso o artefato publicado por este workflow tinha um nome diferente do que
+          # qualquer build local (`npm run package`) produz.
+          echo "VSIX_NAME=${PUB}.${NAME}-${BASE}-win32-x64.vsix" >> "$GITHUB_ENV"
 
       - name: Forçar dependências coerentes (remove legados e fixa serialport@^12)
         shell: bash
@@ -140,30 +144,6 @@ jobs:
             npm install --no-audit --no-fund --omit=optional || npm install --no-audit --no-fund
           fi
 
-      - name: Garantir package.json.files (pacote enxuto) e main/out
-        working-directory: ${{ env.EXT_DIR }}
-        run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const pkgPath = 'package.json';
-          const pkg = JSON.parse(fs.readFileSync(pkgPath,'utf8'));
-          // main correto
-          pkg.main = './out/extension.js';
-          // files mínimos
-          const files = new Set(['out/**','images/**','media/**','node_modules/**','package.json','README.md','CHANGELOG.md','LICENSE.txt']);
-          pkg.files = Array.from(files);
-          // engines.vscode obrigatório
-          pkg.engines = pkg.engines || {};
-          pkg.engines.vscode = pkg.engines.vscode || '^1.90.0';
-          // se icon não existir, remove pra não quebrar
-          if (pkg.icon && !fs.existsSync(pkg.icon)) {
-            console.log('icon ausente -> removendo pkg.icon');
-            delete pkg.icon;
-          }
-          fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
-          console.log('package.json ajustado');
-          NODE
-
       - name: (Opcional) Copiar frontend para media/ se existir
         working-directory: ${{ env.EXT_DIR }}
         run: |
@@ -183,19 +163,24 @@ jobs:
           npm run -s compile
           test -f out/extension.js || { echo "::error ::out/extension.js não gerado"; ls -la out || true; exit 1; }
 
+      - name: Testar empacotamento (falha se faltar dependência de runtime no .vsix)
+        working-directory: ${{ env.EXT_DIR }}
+        run: |
+          set -euxo pipefail
+          npm run -s test:package
+
       - name: Instalar CLIs (vsce/ovsx)
         run: npm i -g @vscode/vsce ovsx
+
+      - name: Podar prebuilds nativos de outras plataformas (mantém só win32-x64)
+        working-directory: ${{ env.EXT_DIR }}
+        run: node scripts/prune-foreign-prebuilds.js
 
       - name: Empacotar (.vsix)
         working-directory: ${{ env.EXT_DIR }}
         run: |
           set -euxo pipefail
-          # Se files[] citar CHANGELOG.md e ele não existir, remove para não quebrar o vsce
-          if jq -e '.files?|index("CHANGELOG.md")' package.json >/dev/null 2>&1 && [ ! -f CHANGELOG.md ]; then
-            echo "::warning::Removendo CHANGELOG.md de files[] para evitar erro do vsce"
-            jq 'del(.files[] | select(.=="CHANGELOG.md"))' package.json > package.tmp && mv package.tmp package.json
-          fi
-          vsce package -o "../${{ env.VSIX_NAME }}"
+          vsce package --target win32-x64 -o "../${{ env.VSIX_NAME }}"
 
       - name: Upload artifact (.vsix)
         uses: actions/upload-artifact@v4
